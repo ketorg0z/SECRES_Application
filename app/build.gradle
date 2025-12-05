@@ -39,5 +39,8 @@ dependencies {
     testImplementation libs.junit
     androidTestImplementation libs.ext.junit
     androidTestImplementation libs.espresso.core
+    implementation 'org.pcap4j:pcap4j-core:1.8.2'
+    implementation 'org.pcap4j:pcap4j-packetfactory-static:1.8.2'
+    implementation 'org.pcap4j:pcap4j-packetfactory-propertiesbased:1.8.2' // Provides the binder class
 
 }
