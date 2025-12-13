@@ -10,6 +10,7 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 
+import org.pcap4j.core.*;
 import org.pcap4j.packet.IpPacket;
 import org.pcap4j.packet.IpV4Packet;
 import org.pcap4j.packet.IpV6Packet;
@@ -19,7 +20,6 @@ import org.pcap4j.packet.UdpPacket;
 import org.pcap4j.packet.namednumber.IpNumber;
 import org.pcap4j.packet.factory.PacketFactories;
 import org.pcap4j.packet.factory.PacketFactory;
-import org.pcap4j.packet.factory.PacketFactoryBinder;
 
 
 public class VPN extends VpnService {
@@ -77,34 +77,26 @@ public class VPN extends VpnService {
                 try {
                     byte[] capturedPacketBytes = new byte[length];
                     System.arraycopy(packet, 0, capturedPacketBytes, 0, length);
-                    // 2. Use pcap4j's factory to create a Packet object from the raw bytes.
-                    Packet parsedPacket = PacketFactories.getFactory(Packet.class, IpNumber.class)
-                            .newInstance(capturedPacketBytes, 0, capturedPacketBytes.length, IpNumber.IPV4);
+                    IpPacket ipPacket = IpV4Packet.newPacket(capturedPacketBytes, 0, length);
 
-                    IpPacket ipPacket = parsedPacket.get(IpPacket.class);
-                    if (ipPacket != null) {
-                        String protocol = ipPacket.getHeader().getProtocol().name();
-                        String srcAddr = ipPacket.getHeader().getSrcAddr().getHostAddress();
-                        String dstAddr = ipPacket.getHeader().getDstAddr().getHostAddress();
-                        String portInfo = "";
+                    String protocol = ipPacket.getHeader().getProtocol().name();
+                    String srcAddr = ipPacket.getHeader().getSrcAddr().getHostAddress();
+                    String dstAddr = ipPacket.getHeader().getDstAddr().getHostAddress();
+                    String portInfo = "";
 
-                        if (protocol.equals("TCP")) {
-                            TcpPacket tcpPacket = ipPacket.get(TcpPacket.class);
-                            int srcPort = tcpPacket.getHeader().getSrcPort().valueAsInt();
-                            int dstPort = tcpPacket.getHeader().getDstPort().valueAsInt();
-                            portInfo = " | " + srcPort + " -> " + dstPort;
-                        } else if (protocol.equals("UDP")) {
-                            UdpPacket udpPacket = ipPacket.get(UdpPacket.class);
-                            int srcPort = udpPacket.getHeader().getSrcPort().valueAsInt();
-                            int dstPort = udpPacket.getHeader().getDstPort().valueAsInt();
-                            portInfo = " | " + srcPort + " -> " + dstPort;
-                        }
-
-                        packetInfo = protocol + " | " + srcAddr + " -> " + dstAddr + portInfo;
-
-                    } else {
-                        packetInfo = "Non-IP Packet - Size: " + length;
+                    if (protocol.equals("TCP")) {
+                        TcpPacket tcpPacket = ipPacket.get(TcpPacket.class);
+                        int srcPort = tcpPacket.getHeader().getSrcPort().valueAsInt();
+                        int dstPort = tcpPacket.getHeader().getDstPort().valueAsInt();
+                        portInfo = " | " + srcPort + " -> " + dstPort;
+                    } else if (protocol.equals("UDP")) {
+                        UdpPacket udpPacket = ipPacket.get(UdpPacket.class);
+                        int srcPort = udpPacket.getHeader().getSrcPort().valueAsInt();
+                        int dstPort = udpPacket.getHeader().getDstPort().valueAsInt();
+                        portInfo = " | " + srcPort + " -> " + dstPort;
                     }
+
+                    packetInfo = protocol + " | " + srcAddr + " -> " + dstAddr + portInfo;
 
                 } catch (Exception e) {
                     packetInfo = "Malformed Packet - Size: " + length;
