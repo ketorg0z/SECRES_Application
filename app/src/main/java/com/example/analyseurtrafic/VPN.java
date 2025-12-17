@@ -10,16 +10,11 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 
-import org.pcap4j.core.*;
-import org.pcap4j.packet.IpPacket;
 import org.pcap4j.packet.IpV4Packet;
 import org.pcap4j.packet.IpV6Packet;
 import org.pcap4j.packet.Packet;
 import org.pcap4j.packet.TcpPacket;
 import org.pcap4j.packet.UdpPacket;
-import org.pcap4j.packet.namednumber.IpNumber;
-import org.pcap4j.packet.factory.PacketFactories;
-import org.pcap4j.packet.factory.PacketFactory;
 
 
 public class VPN extends VpnService {
@@ -50,68 +45,134 @@ public class VPN extends VpnService {
     }
 
     private void runVpn() throws Exception {
-        // 1. Configure the VPN interface
-        Builder builder = new Builder();
-        builder.setSession("AnalyseurTrafic");
-        builder.addAddress("10.0.0.2", 24); // Internal IP address for the VPN interface
-        builder.addRoute("0.0.0.0", 0);   // Route all traffic through the VPN
+        try {
+            // 1. Configure the VPN interface
+            Builder builder = new Builder();
+            builder.setSession("AnalyseurTrafic");
+            builder.addAddress("10.0.0.2", 24); // Internal IP address for the VPN interface
+            builder.addRoute("0.0.0.0", 0);   // Route all traffic through the VPN
 
-        // 2. Establish the VPN interface
-        vpnInterface = builder.establish();
-        if (vpnInterface == null) {
-            Log.e(TAG, "VPN interface not established");
-            return;
-        }
-
-        // 3. Get the input and output streams
-        FileInputStream in = new FileInputStream(vpnInterface.getFileDescriptor());
-        FileOutputStream out = new FileOutputStream(vpnInterface.getFileDescriptor());
-
-        // 4. Start reading and writing packets (the core logic of your packet analyzer)
-        // For now, this loop will just read packets and log their size.
-        byte[] packet = new byte[32767];
-        while (true) {
-            int length = in.read(packet);
-            if (length > 0) {
-                String packetInfo;
-                try {
-                    byte[] capturedPacketBytes = new byte[length];
-                    System.arraycopy(packet, 0, capturedPacketBytes, 0, length);
-                    IpPacket ipPacket = IpV4Packet.newPacket(capturedPacketBytes, 0, length);
-
-                    String protocol = ipPacket.getHeader().getProtocol().name();
-                    String srcAddr = ipPacket.getHeader().getSrcAddr().getHostAddress();
-                    String dstAddr = ipPacket.getHeader().getDstAddr().getHostAddress();
-                    String portInfo = "";
-
-                    if (protocol.equals("TCP")) {
-                        TcpPacket tcpPacket = ipPacket.get(TcpPacket.class);
-                        int srcPort = tcpPacket.getHeader().getSrcPort().valueAsInt();
-                        int dstPort = tcpPacket.getHeader().getDstPort().valueAsInt();
-                        portInfo = " | " + srcPort + " -> " + dstPort;
-                    } else if (protocol.equals("UDP")) {
-                        UdpPacket udpPacket = ipPacket.get(UdpPacket.class);
-                        int srcPort = udpPacket.getHeader().getSrcPort().valueAsInt();
-                        int dstPort = udpPacket.getHeader().getDstPort().valueAsInt();
-                        portInfo = " | " + srcPort + " -> " + dstPort;
-                    }
-
-                    packetInfo = protocol + " | " + srcAddr + " -> " + dstAddr + portInfo;
-
-                } catch (Exception e) {
-                    packetInfo = "Malformed Packet - Size: " + length;
-                    Log.e(TAG, "Error parsing packet", e);
-                }
-
-                Intent intent = new Intent(ACTION_PACKET_RECEIVED);
-                intent.putExtra(EXTRA_PACKET_INFO, packetInfo);
-                LocalBroadcastManager.getInstance(this).sendBroadcast(intent);
-
-                out.write(packet, 0, length);
+            // 2. Establish the VPN interface
+            vpnInterface = builder.establish();
+            if (vpnInterface == null) {
+                Log.e(TAG, "VPN interface not established");
+                return;
             }
+
+            // 3. Get the input and output streams
+            FileInputStream in = new FileInputStream(vpnInterface.getFileDescriptor());
+            FileOutputStream out = new FileOutputStream(vpnInterface.getFileDescriptor());
+
+            // 4. Start reading and writing packets (the core logic of your packet analyzer)
+            // For now, this loop will just read packets and log their size.
+            byte[] packet = new byte[32767];
+
+            byte[] buffer = new byte[32767];
+
+            while (true) {
+                int length = in.read(buffer);
+                if (length > 0) {
+
+                    String info = defineIPVersion(buffer, length);
+                    sendToUI(info);
+
+                    out.write(buffer, 0, length);
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "VPN error", e);
         }
     }
 
+    private String defineIPVersion(byte[] data, int length) {
+        try {
+            Packet packet;
+
+            // Detect IPv4 or IPv6
+            if ((data[0] >> 4) == 4) {
+                packet = IpV4Packet.newPacket(data, 0, length);
+                return parseIPv4((IpV4Packet) packet);
+            } else if ((data[0] >> 4) == 6) {
+                packet = IpV6Packet.newPacket(data, 0, length);
+                return parseIPv6((IpV6Packet) packet);
+            } else {
+                return "Unknown L3 Packet";
+            }
+
+        } catch (Exception e) {
+            return "Malformed packet (" + length + " bytes)";
+        }
+    }
+
+    private String parseIPv4(IpV4Packet ip) {
+
+        int protocol = ip.getHeader().getProtocol().value();
+        String src = ip.getHeader().getSrcAddr().getHostAddress();
+        String dst = ip.getHeader().getDstAddr().getHostAddress();
+
+        if (protocol == 6) { // TCP
+            TcpPacket tcp = ip.get(TcpPacket.class);
+            int sport = tcp.getHeader().getSrcPort().valueAsInt();
+            int dport = tcp.getHeader().getDstPort().valueAsInt();
+            return "IPv4 | TCP | " + src + ":" + sport + " → " + dst + ":" + dport +
+                    identifyAppProtocol(dport);
+
+        } else if (protocol == 17) { // UDP
+            UdpPacket udp = ip.get(UdpPacket.class);
+            int sport = udp.getHeader().getSrcPort().valueAsInt();
+            int dport = udp.getHeader().getDstPort().valueAsInt();
+            return "IPv4 | UDP | " + src + ":" + sport + " → " + dst + ":" + dport +
+                    identifyAppProtocol(dport);
+
+        } else if (protocol == 1) { // ICMPv4
+            return "IPv4 | ICMP | " + src + " → " + dst;
+        }
+
+        return "IPv4 | Protocol " + protocol + " | " + src + " → " + dst;
+    }
+
+    // ================= IPv6 =================
+    private String parseIPv6(IpV6Packet ip) {
+
+        int protocol = ip.getHeader().getNextHeader().value();
+        String src = ip.getHeader().getSrcAddr().getHostAddress();
+        String dst = ip.getHeader().getDstAddr().getHostAddress();
+
+        if (protocol == 6) { // TCP
+            TcpPacket tcp = ip.get(TcpPacket.class);
+            int sport = tcp.getHeader().getSrcPort().valueAsInt();
+            int dport = tcp.getHeader().getDstPort().valueAsInt();
+            return "IPv6 | TCP | " + src + ":" + sport + " → " + dst + ":" + dport +
+                    identifyAppProtocol(dport);
+
+        } else if (protocol == 17) { // UDP
+            UdpPacket udp = ip.get(UdpPacket.class);
+            int sport = udp.getHeader().getSrcPort().valueAsInt();
+            int dport = udp.getHeader().getDstPort().valueAsInt();
+            return "IPv6 | UDP | " + src + ":" + sport + " → " + dst + ":" + dport +
+                    identifyAppProtocol(dport);
+
+        } else if (protocol == 58) { // ICMPv6
+            return "IPv6 | ICMPv6 | " + src + " → " + dst;
+        }
+
+        return "IPv6 | Protocol " + protocol + " | " + src + " → " + dst;
+    }
+
+    // ================= App-layer identification =================
+    private String identifyAppProtocol(int port) {
+        if (port == 80) return " (HTTP)";
+        if (port == 443) return " (HTTPS)";
+        if (port == 53) return " (DNS)";
+        if (port == 123) return " (NTP)";
+        return "";
+    }
+
+    private void sendToUI(String text) {
+        Intent intent = new Intent(ACTION_PACKET_RECEIVED);
+        intent.putExtra(EXTRA_PACKET_INFO, text);
+        LocalBroadcastManager.getInstance(this).sendBroadcast(intent);
+    }
     private void stopVpn() {
         if (vpnThread != null) {
             vpnThread.interrupt();
