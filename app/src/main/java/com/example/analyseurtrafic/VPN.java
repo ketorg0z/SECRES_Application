@@ -114,13 +114,24 @@ public class VPN extends VpnService {
             TcpPacket tcp = ip.get(TcpPacket.class);
             int sport = tcp.getHeader().getSrcPort().valueAsInt();
             int dport = tcp.getHeader().getDstPort().valueAsInt();
+
+            if (sport == 389 || dport == 389) {
+                String ldapData = decodeTCP(tcp);
+                return "IPv4 | TCP | LDAP | " + src + " → " + dst + "Data : " + ldapData;
+            }
+
             return "IPv4 | TCP | " + src + ":" + sport + " → " + dst + ":" + dport +
                     identifyAppProtocol(dport);
-
         } else if (protocol == 17) { // UDP
             UdpPacket udp = ip.get(UdpPacket.class);
             int sport = udp.getHeader().getSrcPort().valueAsInt();
             int dport = udp.getHeader().getDstPort().valueAsInt();
+
+            if (sport == 123 || dport == 123) {
+                String ntpData = decodeNTP(udp);
+                return "IPv4 | UDP | NTP | " + src + " → " + dst + "Data : " + ntpData;
+            }
+
             return "IPv4 | UDP | " + src + ":" + sport + " → " + dst + ":" + dport +
                     identifyAppProtocol(dport);
 
@@ -131,7 +142,6 @@ public class VPN extends VpnService {
         return "IPv4 | Protocol " + protocol + " | " + src + " → " + dst;
     }
 
-    // ================= IPv6 =================
     private String parseIPv6(IpV6Packet ip) {
 
         int protocol = ip.getHeader().getNextHeader().value();
@@ -142,6 +152,12 @@ public class VPN extends VpnService {
             TcpPacket tcp = ip.get(TcpPacket.class);
             int sport = tcp.getHeader().getSrcPort().valueAsInt();
             int dport = tcp.getHeader().getDstPort().valueAsInt();
+
+            if (sport == 389 || dport == 389) {
+                String ldapData = decodeTCP(tcp);
+                return "IPv4 | TCP | LDAP | " + src + " → " + dst + "Data : " + ldapData;
+            }
+
             return "IPv6 | TCP | " + src + ":" + sport + " → " + dst + ":" + dport +
                     identifyAppProtocol(dport);
 
@@ -149,6 +165,12 @@ public class VPN extends VpnService {
             UdpPacket udp = ip.get(UdpPacket.class);
             int sport = udp.getHeader().getSrcPort().valueAsInt();
             int dport = udp.getHeader().getDstPort().valueAsInt();
+
+            if (sport == 123 || dport == 123) {
+                String ntpData = decodeNTP(udp);
+                return "IPv4 | UDP | NTP | " + src + " → " + dst + "Data : " + ntpData;
+            }
+
             return "IPv6 | UDP | " + src + ":" + sport + " → " + dst + ":" + dport +
                     identifyAppProtocol(dport);
 
@@ -159,14 +181,104 @@ public class VPN extends VpnService {
         return "IPv6 | Protocol " + protocol + " | " + src + " → " + dst;
     }
 
-    // ================= App-layer identification =================
     private String identifyAppProtocol(int port) {
         if (port == 80) return " (HTTP)";
         if (port == 443) return " (HTTPS)";
         if (port == 53) return " (DNS)";
         if (port == 123) return " (NTP)";
+        if (port == 389) return " (LDAP)";
         return "";
     }
+
+    private String decodeTCP(TcpPacket tcp) {
+        if (tcp.getPayload() == null) return "Empty Payload";
+
+        byte[] data = tcp.getPayload().getRawData();
+        if (data.length == 0) return "No Data";
+        StringBuilder content = new StringBuilder();
+        StringBuilder currentSegment = new StringBuilder();
+
+        for (byte b : data) {
+            // Check if char is printable (ASCII 32-126)
+            if (b >= 32 && b <= 126) {
+                currentSegment.append((char) b);
+            } else {
+                // End of a printable sequence
+                if (currentSegment.length() > 3) {
+                    if (content.length() > 0) content.append(", ");
+                    content.append(currentSegment);
+                }
+                currentSegment.setLength(0); // Reset
+            }
+        }
+
+        if (currentSegment.length() > 3) {
+            if (content.length() > 0) content.append(", ");
+            content.append(currentSegment);
+        }
+
+        if (content.length() == 0) return "Binary/Encrypted Data";
+
+        // Limit length
+        String result = content.toString();
+        if (result.length() > 100) return result.substring(0, 100) + "...";
+        return result;
+    }
+
+    private String decodeNTP(UdpPacket udp) {
+        if (udp.getPayload() == null) return "Empty Payload";
+
+        byte[] data = udp.getPayload().getRawData();
+        if (data.length < 48) return "Too Short";
+
+        // NTP Header Format (First Byte):
+        // LI (2 bits) | VN (3 bits) | Mode (3 bits)
+
+        int firstByte = data[0] & 0xFF; // Convert signed byte to unsigned int
+
+        int leapIndicator = (firstByte >> 6) & 0x03;
+        int version = (firstByte >> 3) & 0x07;
+        int mode = firstByte & 0x07;
+
+        String modeStr;
+        switch (mode) {
+            case 1: modeStr = "Symmetric Active"; break;
+            case 2: modeStr = "Symmetric Passive"; break;
+            case 3: modeStr = "Client"; break;
+            case 4: modeStr = "Server"; break;
+            case 5: modeStr = "Broadcast"; break;
+            default: modeStr = "Mode " + mode;
+        }
+
+        // Transmit Timestamp decoding
+
+        long seconds = 0;
+        for (int i = 40; i <= 43; i++) {
+            seconds = (seconds << 8) | (data[i] & 0xFF);
+        }
+
+        String timeString;
+        if (seconds > 0) {
+            //Difference between 1900 (NTP) and 1970 (Java)
+
+            long seconds1970 = seconds - 2208988800L;
+            long javaTimeMillis = seconds1970 * 1000;
+
+            java.util.Date date = new java.util.Date(javaTimeMillis);
+            java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("HH:mm:ss");
+            timeString = sdf.format(date);
+        } else {
+            timeString = "Unknown";
+        }
+
+        return "Ver: " + version + ",  LI : " + leapIndicator + ",  Type: " + modeStr + ", Time: " + timeString;
+    }
+
+    private String decodeLDAP(byte[] data) {
+        return "LDAP Data";
+    }
+
+
 
     private void sendToUI(String text) {
         Intent intent = new Intent(ACTION_PACKET_RECEIVED);
