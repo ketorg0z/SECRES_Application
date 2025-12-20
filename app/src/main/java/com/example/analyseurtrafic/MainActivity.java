@@ -8,6 +8,7 @@ import android.net.VpnService;
 import android.os.Bundle;
 import android.widget.ArrayAdapter;
 import android.widget.ListView;
+import android.widget.Toast;
 
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
@@ -21,18 +22,44 @@ public class MainActivity extends AppCompatActivity {
 
     private ListView packetListView;
     private ArrayAdapter<String> packetAdapter;
-    private ArrayList<String> packetList;
+    private final ArrayList<String> packetList = new ArrayList<>();
 
-    private BroadcastReceiver packetReceiver = new BroadcastReceiver() {
+    private final BroadcastReceiver packetReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
             if (intent != null && VPN.ACTION_PACKET_RECEIVED.equals(intent.getAction())) {
                 String packetInfo = intent.getStringExtra(VPN.EXTRA_PACKET_INFO);
                 if (packetInfo != null) {
-                    packetList.add(0, packetInfo); // Add to top of the list
-                    packetAdapter.notifyDataSetChanged();
+                    runOnUiThread(() -> addPacketToList(packetInfo));
                 }
             }
+        }
+
+        private void addPacketToList(String packetInfo) {
+            // Mettre en évidence selon le type de paquet
+            String displayInfo;
+            if (packetInfo.contains("[SUSPICIOUS]") || packetInfo.contains("[SPOOFING")) {
+                displayInfo = "🚨 " + packetInfo;
+            } else if (packetInfo.contains("[INSECURE]") || packetInfo.contains("[Weak")) {
+                displayInfo = "⚠️ " + packetInfo;
+            } else if (packetInfo.contains("ARP")) {
+                displayInfo = "🔗 " + packetInfo;
+            } else if (packetInfo.contains("ICMP")) {
+                displayInfo = "📡 " + packetInfo;
+            } else if (packetInfo.contains("SSH") || packetInfo.contains("HTTPS")) {
+                displayInfo = "🔐 " + packetInfo;
+            } else {
+                displayInfo = packetInfo;
+            }
+
+            packetList.add(0, displayInfo);
+
+            // Limiter la taille de la liste
+            if (packetList.size() > 200) {
+                packetList.remove(packetList.size() - 1);
+            }
+
+            packetAdapter.notifyDataSetChanged();
         }
     };
 
@@ -42,17 +69,20 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
 
         packetListView = findViewById(R.id.packet_list);
-        packetList = new ArrayList<>();
         packetAdapter = new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, packetList);
         packetListView.setAdapter(packetAdapter);
 
-        // Automatically start the VPN connection process
+        Toast.makeText(this, "Démarrage de l'analyse VPN...",
+                Toast.LENGTH_LONG).show();
+
+        startVpnService();
+    }
+
+    private void startVpnService() {
         Intent vpnIntent = VpnService.prepare(getApplicationContext());
         if (vpnIntent != null) {
-            // This is the first time. Ask the user for permission.
             startActivityForResult(vpnIntent, VPN_REQUEST_CODE);
         } else {
-            // Permission has already been granted.
             onActivityResult(VPN_REQUEST_CODE, RESULT_OK, null);
         }
     }
@@ -60,28 +90,33 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == VPN_REQUEST_CODE && resultCode == RESULT_OK) {
-            // Permission granted, start the VPN service
-            Intent intent = new Intent(this, VPN.class);
-            startService(intent);
-        } else {
-            packetList.add(0, "Error: Permission not granted");
-            packetAdapter.notifyDataSetChanged();
+        if (requestCode == VPN_REQUEST_CODE) {
+            if (resultCode == RESULT_OK) {
+                Intent intent = new Intent(this, VPN.class);
+                startService(intent);
+                Toast.makeText(this, "VPN actif - Analyse en cours...",
+                        Toast.LENGTH_SHORT).show();
+            } else {
+                packetList.add(0, "❌ Permission VPN refusée");
+                packetAdapter.notifyDataSetChanged();
+                Toast.makeText(this, "Permission VPN requise",
+                        Toast.LENGTH_LONG).show();
+            }
         }
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        // Register the receiver to get updates from the VPN service
         LocalBroadcastManager.getInstance(this).registerReceiver(
-                packetReceiver, new IntentFilter(VPN.ACTION_PACKET_RECEIVED));
+                packetReceiver,
+                new IntentFilter(VPN.ACTION_PACKET_RECEIVED)
+        );
     }
 
     @Override
     protected void onPause() {
         super.onPause();
-        // Unregister the receiver to avoid memory leaks
         LocalBroadcastManager.getInstance(this).unregisterReceiver(packetReceiver);
     }
 }
