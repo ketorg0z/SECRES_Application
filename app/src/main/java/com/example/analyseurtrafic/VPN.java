@@ -46,33 +46,34 @@ public class VPN extends VpnService {
 
     private void runVpn() throws Exception {
         try {
-            // 1. Configure the VPN interface
             Builder builder = new Builder();
             builder.setSession("AnalyseurTrafic");
-            builder.addAddress("10.0.0.2", 24); // Internal IP address for the VPN interface
-            builder.addRoute("0.0.0.0", 0);   // Route all traffic through the VPN
+            builder.addAddress("10.0.0.2", 24);
+            builder.addRoute("0.0.0.0", 0);
 
-            // 2. Establish the VPN interface
+
+            // 1. Éviter la boucle infinie : l'app ne s'analyse pas elle-même
+            builder.addDisallowedApplication(getPackageName());
+
+            // 2. Ajouter un DNS pour que le navigateur sache où envoyer les requêtes
+            builder.addDnsServer("8.8.8.8");
+
+            // 3. Taille de paquet standard
+            builder.setMtu(1500);
+            // ------------------------------
+
             vpnInterface = builder.establish();
-            if (vpnInterface == null) {
-                Log.e(TAG, "VPN interface not established");
-                return;
-            }
+            if (vpnInterface == null) return;
 
-            // 3. Get the input and output streams
             FileInputStream in = new FileInputStream(vpnInterface.getFileDescriptor());
             FileOutputStream out = new FileOutputStream(vpnInterface.getFileDescriptor());
 
-            // 4. Start reading and writing packets (the core logic of your packet analyzer)
-            // For now, this loop will just read packets and log their size.
-            byte[] packet = new byte[32767];
-
             byte[] buffer = new byte[32767];
 
-            while (true) {
+            while (!Thread.interrupted()) {
                 int length = in.read(buffer);
                 if (length > 0) {
-
+                    // Analyse du paquet
                     String info = defineIPVersion(buffer, length);
                     sendToUI(info);
 
@@ -83,7 +84,6 @@ public class VPN extends VpnService {
             Log.e(TAG, "VPN error", e);
         }
     }
-
     private String defineIPVersion(byte[] data, int length) {
         try {
             Packet packet;
@@ -105,80 +105,97 @@ public class VPN extends VpnService {
     }
 
     private String parseIPv4(IpV4Packet ip) {
+        try {
+            int protocol = ip.getHeader().getProtocol().value();
+            String src = ip.getHeader().getSrcAddr().getHostAddress();
+            String dst = ip.getHeader().getDstAddr().getHostAddress();
 
-        int protocol = ip.getHeader().getProtocol().value();
-        String src = ip.getHeader().getSrcAddr().getHostAddress();
-        String dst = ip.getHeader().getDstAddr().getHostAddress();
+            // TCP
+            if (protocol == 6 && ip.contains(TcpPacket.class)) {
+                TcpPacket tcp = ip.get(TcpPacket.class);
+                int sport = tcp.getHeader().getSrcPort().valueAsInt();
+                int dport = tcp.getHeader().getDstPort().valueAsInt();
 
-        if (protocol == 6) { // TCP
-            TcpPacket tcp = ip.get(TcpPacket.class);
-            int sport = tcp.getHeader().getSrcPort().valueAsInt();
-            int dport = tcp.getHeader().getDstPort().valueAsInt();
-
-            if (sport == 389 || dport == 389) {
-                String ldapData = decodeTCP(tcp);
-                return "IPv4 | TCP | LDAP | " + src + " → " + dst + "Data : " + ldapData;
+                if (sport == 80 || dport == 80) {
+                    return "IPv4 | HTTP | " + src + " → " + dst + " | " + decodeHTTP(tcp);
+                }
+                return "IPv4 | TCP | " + src + ":" + sport + " → " + dst + ":" + dport + identifyAppProtocol(dport);
             }
 
-            return "IPv4 | TCP | " + src + ":" + sport + " → " + dst + ":" + dport +
-                    identifyAppProtocol(dport);
-        } else if (protocol == 17) { // UDP
-            UdpPacket udp = ip.get(UdpPacket.class);
-            int sport = udp.getHeader().getSrcPort().valueAsInt();
-            int dport = udp.getHeader().getDstPort().valueAsInt();
+            // UDP
+            else if (protocol == 17 && ip.contains(UdpPacket.class)) {
+                UdpPacket udp = ip.get(UdpPacket.class);
+                int sport = udp.getHeader().getSrcPort().valueAsInt();
+                int dport = udp.getHeader().getDstPort().valueAsInt();
 
-            if (sport == 123 || dport == 123) {
-                String ntpData = decodeNTP(udp);
-                return "IPv4 | UDP | NTP | " + src + " → " + dst + "Data : " + ntpData;
+                if (sport == 53 || dport == 53) {
+                    return "IPv4 | DNS | " + src + " → " + dst + " | " + decodeDNS(udp);
+                }
+                if (sport == 123 || dport == 123) {
+                    return "IPv4 | NTP | " + src + " → " + dst + " | " + decodeNTP(udp);
+                }
+                return "IPv4 | UDP | " + src + ":" + sport + " → " + dst + ":" + dport + identifyAppProtocol(dport);
             }
 
-            return "IPv4 | UDP | " + src + ":" + sport + " → " + dst + ":" + dport +
-                    identifyAppProtocol(dport);
-
-        } else if (protocol == 1) { // ICMPv4
-            return "IPv4 | ICMP | " + src + " → " + dst;
+            return "IPv4 | Protocole " + protocol + " | " + src + " → " + dst;
+        } catch (Exception e) {
+            return "Erreur Parsing IPv4";
         }
-
-        return "IPv4 | Protocol " + protocol + " | " + src + " → " + dst;
     }
 
+
     private String parseIPv6(IpV6Packet ip) {
+        try {
+            // En IPv6, on regarde le champ "Next Header"
+            int nextHeader = ip.getHeader().getNextHeader().value();
+            String src = ip.getHeader().getSrcAddr().getHostAddress();
+            String dst = ip.getHeader().getDstAddr().getHostAddress();
 
-        int protocol = ip.getHeader().getNextHeader().value();
-        String src = ip.getHeader().getSrcAddr().getHostAddress();
-        String dst = ip.getHeader().getDstAddr().getHostAddress();
+            // 1. Gestion du TCP
+            if (nextHeader == 6 && ip.contains(TcpPacket.class)) {
+                TcpPacket tcp = ip.get(TcpPacket.class);
+                int sport = tcp.getHeader().getSrcPort().valueAsInt();
+                int dport = tcp.getHeader().getDstPort().valueAsInt();
 
-        if (protocol == 6) { // TCP
-            TcpPacket tcp = ip.get(TcpPacket.class);
-            int sport = tcp.getHeader().getSrcPort().valueAsInt();
-            int dport = tcp.getHeader().getDstPort().valueAsInt();
+                if (sport == 80 || dport == 80) {
+                    return "IPv6 | HTTP | " + src + " → " + dst + " | " + decodeHTTP(tcp);
+                }
 
-            if (sport == 389 || dport == 389) {
-                String ldapData = decodeTCP(tcp);
-                return "IPv4 | TCP | LDAP | " + src + " → " + dst + "Data : " + ldapData;
+                if (sport == 389 || dport == 389) {
+                    return "IPv6 | LDAP | " + src + " → " + dst + " | " + decodeTCP(tcp);
+                }
+
+                return "IPv6 | TCP | " + src + ":" + sport + " → " + dst + ":" + dport + identifyAppProtocol(dport);
             }
 
-            return "IPv6 | TCP | " + src + ":" + sport + " → " + dst + ":" + dport +
-                    identifyAppProtocol(dport);
+            // 2. Gestion du UDP
+            else if (nextHeader == 17 && ip.contains(UdpPacket.class)) {
+                UdpPacket udp = ip.get(UdpPacket.class);
+                int sport = udp.getHeader().getSrcPort().valueAsInt();
+                int dport = udp.getHeader().getDstPort().valueAsInt();
 
-        } else if (protocol == 17) { // UDP
-            UdpPacket udp = ip.get(UdpPacket.class);
-            int sport = udp.getHeader().getSrcPort().valueAsInt();
-            int dport = udp.getHeader().getDstPort().valueAsInt();
+                if (sport == 53 || dport == 53) {
+                    return "IPv6 | DNS | " + src + " → " + dst + " | " + decodeDNS(udp);
+                }
 
-            if (sport == 123 || dport == 123) {
-                String ntpData = decodeNTP(udp);
-                return "IPv4 | UDP | NTP | " + src + " → " + dst + "Data : " + ntpData;
+                if (sport == 123 || dport == 123) {
+                    return "IPv6 | NTP | " + src + " → " + dst + " | " + decodeNTP(udp);
+                }
+
+                return "IPv6 | UDP | " + src + ":" + sport + " → " + dst + ":" + dport + identifyAppProtocol(dport);
             }
 
-            return "IPv6 | UDP | " + src + ":" + sport + " → " + dst + ":" + dport +
-                    identifyAppProtocol(dport);
+            // 3. Gestion ICMPv6
+            else if (nextHeader == 58) {
+                return "IPv6 | ICMPv6 (Ping/Neighbor Disc.) | " + src + " → " + dst;
+            }
 
-        } else if (protocol == 58) { // ICMPv6
-            return "IPv6 | ICMPv6 | " + src + " → " + dst;
+            return "IPv6 | NextHeader: " + nextHeader + " | " + src + " → " + dst;
+
+        } catch (Exception e) {
+            Log.e(TAG, "Erreur parsing IPv6", e);
+            return "IPv6 Parsing Error";
         }
-
-        return "IPv6 | Protocol " + protocol + " | " + src + " → " + dst;
     }
 
     private String identifyAppProtocol(int port) {
@@ -297,6 +314,58 @@ public class VPN extends VpnService {
             }
         }
     }
+
+    private String decodeDNS(UdpPacket udp) {
+        if (udp.getPayload() == null) return "No Data";
+        byte[] data = udp.getPayload().getRawData();
+        if (data.length < 12) return "DNS Header too short";
+
+        StringBuilder domain = new StringBuilder();
+        int pos = 12;
+
+        try {
+            while (pos < data.length && data[pos] > 0) {
+                int labelLength = data[pos];
+                if (pos + labelLength + 1 > data.length) break;
+
+                for (int i = 0; i < labelLength; i++) {
+                    domain.append((char) data[pos + 1 + i]);
+                }
+                domain.append(".");
+                pos += labelLength + 1;
+            }
+        } catch (Exception e) {
+            return "DNS Parsing Error";
+        }
+
+        String query = domain.toString();
+        return query.isEmpty() ? "DNS Query (Other)" : "Query: " + query;
+    }
+
+    private String decodeHTTP(TcpPacket tcp) {
+        if (tcp.getPayload() == null) return "No Data";
+        String data = new String(tcp.getPayload().getRawData());
+
+        if (data.startsWith("GET") || data.startsWith("POST") || data.startsWith("HTTP")) {
+            // On récupère la première ligne (ex: GET /index.html HTTP/1.1)
+            String firstLine = data.split("\r\n")[0];
+
+            // On cherche le header "Host:" pour savoir quel site est visité
+            String host = "";
+            for (String line : data.split("\r\n")) {
+                if (line.startsWith("Host: ")) {
+                    host = line.replace("Host: ", "");
+                    break;
+                }
+            }
+            return firstLine + (host.isEmpty() ? "" : " [Host: " + host + "]");
+        }
+
+        return "HTTP Data (Continuation/Binary)";
+    }
+
+
+
 
     @Override
     public void onDestroy() {
