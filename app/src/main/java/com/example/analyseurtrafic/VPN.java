@@ -9,12 +9,18 @@ import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.nio.ByteBuffer;
+import java.nio.channels.DatagramChannel;
 
 import org.pcap4j.packet.IpV4Packet;
 import org.pcap4j.packet.IpV6Packet;
 import org.pcap4j.packet.Packet;
 import org.pcap4j.packet.TcpPacket;
 import org.pcap4j.packet.UdpPacket;
+import org.pcap4j.packet.UnknownPacket;
+import org.pcap4j.packet.namednumber.IpNumber;
+import org.pcap4j.packet.namednumber.IpVersion;
 
 
 public class VPN extends VpnService {
@@ -76,7 +82,11 @@ public class VPN extends VpnService {
                     String info = defineIPVersion(buffer, length);
                     sendToUI(info);
 
-                    out.write(buffer, 0, length);
+                    if ((buffer[0] >> 4) == 4 && buffer[9] == 17) {
+                        handleUdpPackets(buffer, length, out);
+                    }
+
+                    // out.write(buffer, 0, length);
                 }
             }
         } catch (Exception e) {
@@ -188,6 +198,101 @@ public class VPN extends VpnService {
         if (port == 123) return " (NTP)";
         if (port == 389) return " (LDAP)";
         return "";
+    }
+
+    private void handleUdpPackets(byte[] packetData, int length, FileOutputStream out) {
+        java.net.DatagramSocket tunnel = null;
+
+        try {
+            IpV4Packet ipPacket = IpV4Packet.newPacket(packetData, 0, length);
+            UdpPacket udpPacket = ipPacket.get(UdpPacket.class);
+
+            if (udpPacket == null) return;
+
+            String dstIp = ipPacket.getHeader().getDstAddr().getHostAddress();
+            int dstPort = udpPacket.getHeader().getDstPort().valueAsInt();
+
+            // 1. Create an UNBOUND socket (pass null)
+            tunnel = new java.net.DatagramSocket(null);
+
+            // 2. CRITICAL: Protect the socket BEFORE binding or connecting
+            // This tells the OS: "Let this socket bypass the VPN interface"
+            if (!this.protect(tunnel)) {
+                Log.e(TAG, "Failed to protect socket - Loopback prevented");
+                tunnel.close();
+                return;
+            }
+
+            // 3. Now bind it to any available local port
+            tunnel.bind(new java.net.InetSocketAddress(0));
+
+            // 4. Set a short timeout (e.g., 2 seconds) so we don't freeze the app
+            tunnel.setSoTimeout(5000);
+
+            // 4. Send the data
+            byte[] payload = udpPacket.getPayload().getRawData();
+            java.net.DatagramPacket outPacket = new java.net.DatagramPacket(payload, payload.length,
+                    java.net.InetAddress.getByName(dstIp), dstPort);
+
+            Log.d(TAG, "Attempting to forward UDP to: " + dstIp + ":" + dstPort);
+            tunnel.send(outPacket);
+
+            // 5. Read response
+            byte[] receiveData = new byte[32767];
+            java.net.DatagramPacket inPacket = new java.net.DatagramPacket(receiveData, receiveData.length);
+
+            // This will throw SocketTimeoutException if no reply comes in 2s
+            tunnel.receive(inPacket);
+
+            // 6. We got a reply! Build the response packet.
+            int bytesRead = inPacket.getLength();
+
+            // Extract the raw data returned by the server
+            byte[] responseData = new byte[bytesRead];
+            System.arraycopy(inPacket.getData(), 0, responseData, 0, bytesRead);
+
+            UnknownPacket payloadObj = new UnknownPacket.Builder()
+                    .rawData(responseData)
+                    .build();
+
+            // Build UDP Header (SWAPPING PORTS)
+            UdpPacket responseUdp = new UdpPacket.Builder()
+                    .srcPort(udpPacket.getHeader().getDstPort()) // Server Port -> Source
+                    .dstPort(udpPacket.getHeader().getSrcPort()) // Phone Port -> Dest
+                    .srcAddr(ipPacket.getHeader().getDstAddr())
+                    .dstAddr(ipPacket.getHeader().getSrcAddr())
+                    .correctChecksumAtBuild(true)
+                    .correctLengthAtBuild(true)
+                    .payloadBuilder(payloadObj.getBuilder())
+                    .build();
+
+            // Build IP Header (SWAPPING ADDRESSES)
+            IpV4Packet responseIp = new IpV4Packet.Builder()
+                    .version(IpVersion.IPV4)
+                    .tos(ipPacket.getHeader().getTos())
+                    .protocol(IpNumber.UDP)
+                    .srcAddr(ipPacket.getHeader().getDstAddr()) // Server IP -> Source
+                    .dstAddr(ipPacket.getHeader().getSrcAddr()) // Phone IP -> Dest
+                    .payloadBuilder(responseUdp.getBuilder())
+                    .correctChecksumAtBuild(true)
+                    .correctLengthAtBuild(true)
+                    .build();
+
+            byte[] responseBytes = responseIp.getRawData();
+            String responseInfo = defineIPVersion(responseBytes, responseBytes.length);
+            sendToUI("<< RESPONSE: " + responseInfo);
+
+            // 7. Write back to VPN
+            out.write(responseBytes);
+
+
+        } catch (Exception e) {
+            Log.e(TAG, "UDP handling error" + e.getMessage());
+        } finally {
+            if (tunnel != null) {
+                tunnel.close();
+            }
+        }
     }
 
     private String decodeTCP(TcpPacket tcp) {
