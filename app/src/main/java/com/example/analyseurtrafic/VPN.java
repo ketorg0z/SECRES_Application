@@ -57,6 +57,8 @@ public class VPN extends VpnService {
             builder.setSession("AnalyseurTrafic");
             builder.addAddress("10.0.0.2", 24); // Internal IP address for the VPN interface
             builder.addRoute("0.0.0.0", 0);   // Route all traffic through the VPN
+            builder.addAddress("fd00:1:fd00:1:fd00:1:fd00:1", 128);
+            builder.addRoute("0:0:0:0:0:0:0:0", 0);
 
             // 2. Establish the VPN interface
             vpnInterface = builder.establish();
