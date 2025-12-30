@@ -12,6 +12,8 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.DatagramChannel;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import org.pcap4j.packet.IpV4Packet;
 import org.pcap4j.packet.IpV6Packet;
@@ -31,9 +33,12 @@ public class VPN extends VpnService {
     private static final String TAG = "MyVPN";
     private ParcelFileDescriptor vpnInterface = null;
     private Thread vpnThread;
+    private ExecutorService udpExecutor;
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        udpExecutor = Executors.newCachedThreadPool();
+
         vpnThread = new Thread(() -> {
             try {
                 runVpn();
@@ -85,7 +90,12 @@ public class VPN extends VpnService {
                     sendToUI(info);
 
                     if ((buffer[0] >> 4) == 4 && buffer[9] == 17) {
-                        handleUdpPackets(buffer, length, out);
+                        byte[] packetCopy = new byte[length];
+                        System.arraycopy(buffer, 0, packetCopy, 0, length);
+
+                        udpExecutor.submit(() -> {
+                           handleUdpPackets(packetCopy, length, out);
+                        });
                     }
 
                     // out.write(buffer, 0, length);
@@ -408,6 +418,11 @@ public class VPN extends VpnService {
     @Override
     public void onDestroy() {
         super.onDestroy();
+
+        if (udpExecutor != null) {
+            udpExecutor.shutdownNow();
+        }
+
         stopVpn();
     }
 }
