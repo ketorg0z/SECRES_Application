@@ -9,14 +9,16 @@ import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.net.InetSocketAddress;
-import java.nio.ByteBuffer;
-import java.nio.channels.DatagramChannel;
+//import java.net.InetSocketAddress;
+//import java.nio.ByteBuffer;
+//import java.nio.channels.DatagramChannel;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 import org.pcap4j.packet.IpV4Packet;
 import org.pcap4j.packet.IpV6Packet;
+import org.pcap4j.packet.IcmpV4CommonPacket;
+import org.pcap4j.packet.IcmpV6CommonPacket;
 import org.pcap4j.packet.Packet;
 import org.pcap4j.packet.TcpPacket;
 import org.pcap4j.packet.UdpPacket;
@@ -137,28 +139,47 @@ public class VPN extends VpnService {
             int sport = tcp.getHeader().getSrcPort().valueAsInt();
             int dport = tcp.getHeader().getDstPort().valueAsInt();
 
+            if (sport == 80 || dport == 80) {
+                return "IPv4 | TCP | HTTP | " + src + " → " + dst + " | " + decodeHTTP(tcp);
+            }
+
+            if (dport == 22 || sport == 22) {
+                String sshInfo = analyzeSSH(tcp);
+                if (sshInfo != null) {
+                    return "IPv4 | TCP | SSH | " + src + " → " + dst + " | " + sshInfo;
+                } else {
+                    return "IPv4 | TCP | SSH | " + src + " → " + dst;
+                }
+            }
+
+            if (dport == 23 || sport == 23) {
+                String telnetData = decodeTelnet(tcp);
+                return "IPv4 | TCP | TELNET | " + src + " → " + dst + " | Data: " + telnetData;
+            }
+
             if (sport == 389 || dport == 389) {
                 String ldapData = decodeTCP(tcp);
                 return "IPv4 | TCP | LDAP | " + src + " → " + dst + "Data : " + ldapData;
             }
 
-            return "IPv4 | TCP | " + src + ":" + sport + " → " + dst + ":" + dport +
-                    identifyAppProtocol(dport);
+            return "IPv4 | TCP | " + identifyAppProtocol(dport) + " | " +  src + ":" + sport + " → " + dst + ":" + dport;
         } else if (protocol == 17) { // UDP
             UdpPacket udp = ip.get(UdpPacket.class);
             int sport = udp.getHeader().getSrcPort().valueAsInt();
             int dport = udp.getHeader().getDstPort().valueAsInt();
 
+            if (sport == 53 || dport == 53) {
+                return "IPv4 | UDP | DNS | " + src + " → " + dst + " | " + decodeDNS(udp);
+            }
             if (sport == 123 || dport == 123) {
                 String ntpData = decodeNTP(udp);
                 return "IPv4 | UDP | NTP | " + src + " → " + dst + "Data : " + ntpData;
             }
 
-            return "IPv4 | UDP | " + src + ":" + sport + " → " + dst + ":" + dport +
-                    identifyAppProtocol(dport);
+            return "IPv4 | UDP | " + identifyAppProtocol(dport) + " | " + src + ":" + sport + " → " + dst + ":" + dport;
 
-        } else if (protocol == 1) { // ICMPv4
-            return "IPv4 | ICMP | " + src + " → " + dst;
+        } else if (protocol == 1) {
+            return analyzeICMPv4(ip);
         }
 
         return "IPv4 | Protocol " + protocol + " | " + src + " → " + dst;
@@ -175,40 +196,50 @@ public class VPN extends VpnService {
             int sport = tcp.getHeader().getSrcPort().valueAsInt();
             int dport = tcp.getHeader().getDstPort().valueAsInt();
 
-            if (sport == 389 || dport == 389) {
-                String ldapData = decodeTCP(tcp);
-                return "IPv4 | TCP | LDAP | " + src + " → " + dst + "Data : " + ldapData;
+            if (sport == 80 || dport == 80) {
+                return "IPv6 | TCP | HTTP | " + src + " → " + dst + " | " + decodeHTTP(tcp);
             }
 
-            return "IPv6 | TCP | " + src + ":" + sport + " → " + dst + ":" + dport +
-                    identifyAppProtocol(dport);
+            if (sport == 389 || dport == 389) {
+                String ldapData = decodeTCP(tcp);
+                return "IPv6 | TCP | LDAP | " + src + " → " + dst + "Data : " + ldapData;
+            }
+
+            return "IPv6 | TCP | " + identifyAppProtocol(dport) + " | " +  src + ":" + sport + " → " + dst + ":" + dport;
 
         } else if (protocol == 17) { // UDP
             UdpPacket udp = ip.get(UdpPacket.class);
             int sport = udp.getHeader().getSrcPort().valueAsInt();
             int dport = udp.getHeader().getDstPort().valueAsInt();
 
-            if (sport == 123 || dport == 123) {
-                String ntpData = decodeNTP(udp);
-                return "IPv4 | UDP | NTP | " + src + " → " + dst + "Data : " + ntpData;
+            if (sport == 53 || dport == 53) {
+                return "IPv6 | UDP | DNS | " + src + " → " + dst + " | " + decodeDNS(udp);
             }
 
-            return "IPv6 | UDP | " + src + ":" + sport + " → " + dst + ":" + dport +
-                    identifyAppProtocol(dport);
+            if (sport == 123 || dport == 123) {
+                String ntpData = decodeNTP(udp);
+                return "IPv6 | UDP | NTP | " + src + " → " + dst + "Data : " + ntpData;
+            }
+
+            return "IPv6 | UDP | " + identifyAppProtocol(dport) + " | " + src + ":" + sport + " → " + dst + ":" + dport;
 
         } else if (protocol == 58) { // ICMPv6
-            return "IPv6 | ICMPv6 | " + src + " → " + dst;
+            return analyzeICMPv6(ip);
         }
 
         return "IPv6 | Protocol " + protocol + " | " + src + " → " + dst;
     }
 
     private String identifyAppProtocol(int port) {
-        if (port == 80) return " (HTTP)";
-        if (port == 443) return " (HTTPS)";
-        if (port == 53) return " (DNS)";
-        if (port == 123) return " (NTP)";
-        if (port == 389) return " (LDAP)";
+        if (port == 22) return "SSH";
+        if (port == 23) return "TELNET";
+        if (port == 161 || port == 162) return "SNMP";
+        if (port == 3389) return "RDP";
+        if (port == 389) return "LDAP";
+        if (port == 123) return "NTP";
+        if (port == 80) return "HTTP";
+        if (port == 443) return "HTTPS";
+        if (port == 53) return "DNS";
         return "";
     }
 
@@ -307,6 +338,134 @@ public class VPN extends VpnService {
         }
     }
 
+    private String analyzeICMPv6(IpV6Packet ip) {
+        try {
+            IcmpV6CommonPacket icmp = ip.get(IcmpV6CommonPacket.class);
+            String src = ip.getHeader().getSrcAddr().getHostAddress();
+            String dst = ip.getHeader().getDstAddr().getHostAddress();
+
+            int type = icmp.getHeader().getType().value();
+
+            StringBuilder result = new StringBuilder();
+            result.append(String.format("ICMPv6 | %s → %s | ", src, dst));
+            result.append(getICMPv6TypeDescription(type));
+
+            return result.toString();
+
+        } catch (Exception e) {
+            return String.format("ICMPv6 | %s → %s | Parse error",
+                    ip.getHeader().getSrcAddr().getHostAddress(),
+                    ip.getHeader().getDstAddr().getHostAddress());
+        }
+    }
+
+    private String analyzeICMPv4(IpV4Packet ip) {
+        try {
+            IcmpV4CommonPacket icmp = ip.get(IcmpV4CommonPacket.class);
+            String src = ip.getHeader().getSrcAddr().getHostAddress();
+            String dst = ip.getHeader().getDstAddr().getHostAddress();
+
+            int type = icmp.getHeader().getType().value();
+            int code = icmp.getHeader().getCode().value();
+
+            StringBuilder result = new StringBuilder();
+            result.append(String.format("ICMPv4 | %s → %s | ", src, dst));
+            result.append(getICMPv4TypeDescription(type, code));
+
+            // Détection de scans ICMP
+            if ((type == 8 || type == 13 || type == 17) &&
+                    !src.startsWith("192.168.") && !src.startsWith("10.")) {
+                result.append(" [External Scan]");
+            }
+
+            return result.toString();
+
+        } catch (Exception e) {
+            return String.format("ICMPv4 | %s → %s | Parse error",
+                    ip.getHeader().getSrcAddr().getHostAddress(),
+                    ip.getHeader().getDstAddr().getHostAddress());
+        }
+    }
+
+    private String analyzeSSH(TcpPacket tcp) {
+        try {
+            if (tcp.getPayload() == null) {
+                return null;
+            }
+
+            byte[] data = tcp.getPayload().getRawData();
+            if (data.length < 4) {
+                return null;
+            }
+
+            // SSH handshake commence par "SSH-"
+            if (data[0] == 'S' && data[1] == 'S' && data[2] == 'H' && data[3] == '-') {
+                StringBuilder version = new StringBuilder();
+                for (int i = 0; i < Math.min(data.length, 50); i++) {
+                    byte b = data[i];
+                    if (b == '\r' || b == '\n') break;
+                    version.append((char) b);
+                }
+                return version.toString();
+            }
+
+            return "Encrypted SSH";
+
+        } catch (Exception e) {
+            Log.e(TAG, "Erreur d'analyse SSH", e);
+            return null;
+        }
+    }
+
+    private String decodeDNS(UdpPacket udp) {
+        if (udp.getPayload() == null) return "No Data";
+        byte[] data = udp.getPayload().getRawData();
+        if (data.length < 12) return "DNS Header too short";
+
+        StringBuilder domain = new StringBuilder();
+        int pos = 12;
+
+        try {
+            while (pos < data.length && data[pos] > 0) {
+                int labelLength = data[pos];
+                if (pos + labelLength + 1 > data.length) break;
+
+                for (int i = 0; i < labelLength; i++) {
+                    domain.append((char) data[pos + 1 + i]);
+                }
+                domain.append(".");
+                pos += labelLength + 1;
+            }
+        } catch (Exception e) {
+            return "DNS Parsing Error";
+        }
+
+        String query = domain.toString();
+        return query.isEmpty() ? "DNS Query (Other)" : "Query: " + query;
+    }
+
+    private String decodeHTTP(TcpPacket tcp) {
+        if (tcp.getPayload() == null) return "No Data";
+        String data = new String(tcp.getPayload().getRawData());
+
+        if (data.startsWith("GET") || data.startsWith("POST") || data.startsWith("HTTP")) {
+            // On récupère la première ligne (ex: GET /index.html HTTP/1.1)
+            String firstLine = data.split("\r\n")[0];
+
+            // On cherche le header "Host:" pour savoir quel site est visité
+            String host = "";
+            for (String line : data.split("\r\n")) {
+                if (line.startsWith("Host: ")) {
+                    host = line.replace("Host: ", "");
+                    break;
+                }
+            }
+            return firstLine + (host.isEmpty() ? "" : " [Host: " + host + "]");
+        }
+
+        return "HTTP Data (Continuation/Binary)";
+    }
+
     private String decodeTCP(TcpPacket tcp) {
         if (tcp.getPayload() == null) return "Empty Payload";
 
@@ -391,11 +550,96 @@ public class VPN extends VpnService {
         return "Ver: " + version + ",  LI : " + leapIndicator + ",  Type: " + modeStr + ", Time: " + timeString;
     }
 
-    private String decodeLDAP(byte[] data) {
-        return "LDAP Data";
+    private String decodeTelnet(TcpPacket tcp) {
+        if (tcp.getPayload() == null) return "Empty Payload";
+
+        byte[] data = tcp.getPayload().getRawData();
+        if (data.length == 0) return "No Data";
+
+        StringBuilder content = new StringBuilder();
+
+        // We filter for printable ASCII to make it readable.
+        for (byte b : data) {
+            // Standard printable ASCII range (32-126)
+            if (b >= 32 && b <= 126) {
+                content.append((char) b);
+            }
+            // Handle Newlines (Enter key)
+            else if (b == 10 || b == 13) {
+                content.append("[Un]"); // Mark newlines visually
+            }
+            // Ignore Telnet Command Codes (usually start with 255 / 0xFF)
+        }
+
+        if (content.length() == 0) return "Binary/Control Data";
+
+        return content.toString();
     }
 
+    private String getICMPv4TypeDescription(int type, int code) {
+        StringBuilder description = new StringBuilder();
 
+        switch (type) {
+            case 0:
+                description.append("Echo Reply");
+                break;
+            case 3:
+                description.append("Destination Unreachable");
+                switch (code) {
+                    case 0: description.append(" (Net)"); break;
+                    case 1: description.append(" (Host)"); break;
+                    case 2: description.append(" (Protocol)"); break;
+                    case 3: description.append(" (Port)"); break;
+                    case 4: description.append(" (Fragmentation)"); break;
+                    case 5: description.append(" (Source Route)"); break;
+                    case 6: description.append(" (Net Unknown)"); break;
+                    case 7: description.append(" (Host Unknown)"); break;
+                    case 9: description.append(" (Comms Prohibited)"); break;
+                    case 10: description.append(" (Host Prohibited)"); break;
+                    case 13: description.append(" (Comms Prohibited)"); break;
+                }
+                break;
+            case 5:
+                description.append("Redirect");
+                break;
+            case 8:
+                description.append("Echo Request");
+                break;
+            case 11:
+                description.append("Time Exceeded");
+                description.append(code == 0 ? " (TTL)" : " (Fragment)");
+                break;
+            case 13:
+                description.append("Timestamp Request");
+                break;
+            case 14:
+                description.append("Timestamp Reply");
+                break;
+            case 17:
+                description.append("Address Mask Request");
+                break;
+            case 18:
+                description.append("Address Mask Reply");
+                break;
+            default:
+                description.append(String.format("Type: %d, Code: %d", type, code));
+        }
+
+        return description.toString();
+    }
+
+    private String getICMPv6TypeDescription(int type) {
+        switch (type) {
+            case 128: return "Echo Request";
+            case 129: return "Echo Reply";
+            case 133: return "Router Solicitation";
+            case 134: return "Router Advertisement";
+            case 135: return "Neighbor Solicitation [NDP]";
+            case 136: return "Neighbor Advertisement [NDP]";
+            case 137: return "Redirect";
+            default: return String.format("Type: %d", type);
+        }
+    }
 
     private void sendToUI(String text) {
         Intent intent = new Intent(ACTION_PACKET_RECEIVED);
