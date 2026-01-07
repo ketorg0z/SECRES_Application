@@ -2,15 +2,27 @@
 <RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:padding="16dp">
+    android:padding="12dp">
 
+    <!-- Search Bar -->
+    <SearchView
+        android:id="@+id/search_view"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:queryHint="Search (IP, protocol, port...)"
+        android:iconifiedByDefault="false"/>
+
+    <!-- Packet List -->
     <ListView
         android:id="@+id/packet_list"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
+        android:layout_below="@id/search_view"
         android:layout_above="@id/pause_btn"
+        android:layout_marginTop="8dp"
         android:layout_marginBottom="8dp"/>
 
+    <!-- Pause Button -->
     <Button
         android:id="@+id/pause_btn"
         android:layout_width="match_parent"
