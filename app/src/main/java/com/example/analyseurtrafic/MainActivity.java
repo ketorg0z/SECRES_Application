@@ -75,12 +75,11 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        // 🔹 UI init
         packetListView = findViewById(R.id.packet_list);
         pauseButton = findViewById(R.id.pause_btn);
         searchView = findViewById(R.id.search_view);
 
-        // 🔹 Data init
+        // Packet list
         allPackets = new ArrayList<>();
         filteredPackets = new ArrayList<>();
 
@@ -91,21 +90,18 @@ public class MainActivity extends AppCompatActivity {
         );
         packetListView.setAdapter(packetAdapter);
 
-        // 🔹 Pause / Resume UI
         pauseButton.setOnClickListener(v -> {
             isPaused = !isPaused;
             pauseButton.setText(isPaused ? "Resume UI" : "Pause UI");
 
-            // Si on reprend → rafraîchir la vue
             if (!isPaused) {
                 filterPackets();
             }
         });
 
-        // 🔹 Recherche
         setupSearch();
 
-        // 🔹 Démarrage VPN
+        // VpnService Initialisation
         Intent vpnIntent = VpnService.prepare(getApplicationContext());
         if (vpnIntent != null) {
             startActivityForResult(vpnIntent, VPN_REQUEST_CODE);
@@ -114,7 +110,6 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    // 🔍 SearchView logic
     private void setupSearch() {
         searchView.setOnQueryTextListener(new SearchView.OnQueryTextListener() {
             @Override
@@ -131,7 +126,7 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    // 🔍 Filtrage des paquets
+    // Packet filtering
     private void filterPackets() {
         filteredPackets.clear();
 
@@ -148,7 +143,6 @@ public class MainActivity extends AppCompatActivity {
         packetAdapter.notifyDataSetChanged();
     }
 
-    // 🔐 VPN Permission result
     @Override
     protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
@@ -157,7 +151,7 @@ public class MainActivity extends AppCompatActivity {
             Intent intent = new Intent(this, VPN.class);
             startService(intent);
         } else {
-            allPackets.add(0, "❌ VPN permission not granted");
+            allPackets.add(0, "VPN permission not granted");
             filterPackets();
         }
     }

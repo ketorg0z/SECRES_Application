@@ -9,9 +9,6 @@ import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
-//import java.net.InetSocketAddress;
-//import java.nio.ByteBuffer;
-//import java.nio.channels.DatagramChannel;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -59,7 +56,7 @@ public class VPN extends VpnService {
 
     private void runVpn() throws Exception {
         try {
-            // 1. Configure the VPN interface
+            // Configuring the VPN interface
             Builder builder = new Builder();
             builder.setSession("AnalyseurTrafic");
             builder.addAddress("10.0.0.2", 24); // Internal IP address for the VPN interface
@@ -67,19 +64,18 @@ public class VPN extends VpnService {
             builder.addAddress("fd00:1:fd00:1:fd00:1:fd00:1", 128);
             builder.addRoute("0:0:0:0:0:0:0:0", 0);
 
-            // 2. Establish the VPN interface
+            // Establish the VPN interface
             vpnInterface = builder.establish();
             if (vpnInterface == null) {
                 Log.e(TAG, "VPN interface not established");
                 return;
             }
 
-            // 3. Get the input and output streams
+            // Get the input and output streams
             FileInputStream in = new FileInputStream(vpnInterface.getFileDescriptor());
             FileOutputStream out = new FileOutputStream(vpnInterface.getFileDescriptor());
 
-            // 4. Start reading and writing packets (the core logic of your packet analyzer)
-            // For now, this loop will just read packets and log their size.
+            // Start reading packets
             byte[] packet = new byte[32767];
 
             byte[] buffer = new byte[32767];
@@ -255,24 +251,22 @@ public class VPN extends VpnService {
             String dstIp = ipPacket.getHeader().getDstAddr().getHostAddress();
             int dstPort = udpPacket.getHeader().getDstPort().valueAsInt();
 
-            // 1. Create an UNBOUND socket (pass null)
+            // Unbound socket create (pass null)
             tunnel = new java.net.DatagramSocket(null);
 
-            // 2. CRITICAL: Protect the socket BEFORE binding or connecting
-            // This tells the OS: "Let this socket bypass the VPN interface"
+            // Protecting the socket before binding or connecting
             if (!this.protect(tunnel)) {
                 Log.e(TAG, "Failed to protect socket - Loopback prevented");
                 tunnel.close();
                 return;
             }
 
-            // 3. Now bind it to any available local port
             tunnel.bind(new java.net.InetSocketAddress(0));
 
-            // 4. Set a short timeout (e.g., 2 seconds) so we don't freeze the app
+            // 5 seconds timeout
             tunnel.setSoTimeout(5000);
 
-            // 4. Send the data
+            // Sending the data
             byte[] payload = udpPacket.getPayload().getRawData();
             java.net.DatagramPacket outPacket = new java.net.DatagramPacket(payload, payload.length,
                     java.net.InetAddress.getByName(dstIp), dstPort);
@@ -280,14 +274,13 @@ public class VPN extends VpnService {
             Log.d(TAG, "Attempting to forward UDP to: " + dstIp + ":" + dstPort);
             tunnel.send(outPacket);
 
-            // 5. Read response
             byte[] receiveData = new byte[32767];
             java.net.DatagramPacket inPacket = new java.net.DatagramPacket(receiveData, receiveData.length);
 
-            // This will throw SocketTimeoutException if no reply comes in 2s
+            // Throwing SocketTimeoutException if no reply comes in 2s
             tunnel.receive(inPacket);
 
-            // 6. We got a reply! Build the response packet.
+            // Building a response packet
             int bytesRead = inPacket.getLength();
 
             // Extract the raw data returned by the server
@@ -298,7 +291,7 @@ public class VPN extends VpnService {
                     .rawData(responseData)
                     .build();
 
-            // Build UDP Header (SWAPPING PORTS)
+            // Build UDP Header with swapped addresses
             UdpPacket responseUdp = new UdpPacket.Builder()
                     .srcPort(udpPacket.getHeader().getDstPort()) // Server Port -> Source
                     .dstPort(udpPacket.getHeader().getSrcPort()) // Phone Port -> Dest
@@ -309,7 +302,7 @@ public class VPN extends VpnService {
                     .payloadBuilder(payloadObj.getBuilder())
                     .build();
 
-            // Build IP Header (SWAPPING ADDRESSES)
+            // Build IP Header with swapped addresses
             IpV4Packet responseIp = new IpV4Packet.Builder()
                     .version(IpVersion.IPV4)
                     .tos(ipPacket.getHeader().getTos())
@@ -323,7 +316,7 @@ public class VPN extends VpnService {
 
             byte[] responseBytes = responseIp.getRawData();
             String responseInfo = defineIPVersion(responseBytes, responseBytes.length);
-            sendToUI("<< RESPONSE: " + responseInfo);
+            sendToUI("RESPONSE: " + responseInfo);
 
             // 7. Write back to VPN
             out.write(responseBytes);
@@ -372,12 +365,6 @@ public class VPN extends VpnService {
             result.append(String.format("ICMPv4 | %s → %s | ", src, dst));
             result.append(getICMPv4TypeDescription(type, code));
 
-            // Détection de scans ICMP
-            if ((type == 8 || type == 13 || type == 17) &&
-                    !src.startsWith("192.168.") && !src.startsWith("10.")) {
-                result.append(" [External Scan]");
-            }
-
             return result.toString();
 
         } catch (Exception e) {
@@ -412,7 +399,7 @@ public class VPN extends VpnService {
             return "Encrypted SSH";
 
         } catch (Exception e) {
-            Log.e(TAG, "Erreur d'analyse SSH", e);
+            Log.e(TAG, "SSH Parsing error", e);
             return null;
         }
     }
