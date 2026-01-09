@@ -318,7 +318,7 @@ public class VPN extends VpnService {
             String responseInfo = defineIPVersion(responseBytes, responseBytes.length);
             sendToUI("RESPONSE: " + responseInfo);
 
-            // 7. Write back to VPN
+            // Write back to VPN
             out.write(responseBytes);
 
 
@@ -364,6 +364,12 @@ public class VPN extends VpnService {
             StringBuilder result = new StringBuilder();
             result.append(String.format("ICMPv4 | %s → %s | ", src, dst));
             result.append(getICMPv4TypeDescription(type, code));
+
+            // Détection de scans ICMP
+            if ((type == 8 || type == 13 || type == 17) &&
+                    !src.startsWith("192.168.") && !src.startsWith("10.")) {
+                result.append(" [External Scan]");
+            }
 
             return result.toString();
 
